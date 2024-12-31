@@ -1,0 +1,6 @@
+.{
+    .name = "embed-file",
+    .version = "0.1.0",
+    .paths = .{ "build.zig.zon", "build.zig", "LICENSE", "README.org", "src" },
+    .dependencies = .{},
+}

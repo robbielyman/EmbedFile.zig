@@ -1,0 +1,81 @@
+* EmbedFile.zig
+
+An extension to the Zig build system.
+Its purpose is to enable a =build.zig= script author
+to programmatically assemble a collection of assets, each of which is to be embedded with =@embedFile=,
+into a module which can be included with =@import=.
+
+To use in your =build.zig= scripts,
+first add this project to your =build.zig.zon=, for example by running the following command
+
+#+begin_src sh
+  zig fetch --save git+https://github.com/robbielyman/EmbedFile.zig
+#+end_src
+
+Then in your =build.zig= you can do
+
+#+begin_src zig
+  const std = @import("std");
+  const e = @import("embed-file");
+
+  pub fn build(b: *std.Build) void {
+      // both return a pointer of type *e.EmbedFile
+      const embed_file = e.addEmbedFiles(b);
+      const alignment: ?u29 = null;
+      const embed_file_other = e.addEmbedFile("name", "contents", alignment);
+      // ...
+  }
+#+end_src
+
+This is the public API of an =EmbedFile= Step:
+
+#+begin_src zig
+  pub fn add(embed_file: *EmbedFile, name: []const u8, bytes: []const u8, alignment: ?u29) void {
+      //...
+  }
+
+  pub fn addFile(
+      embed_file: *EmbedFile,
+      // this is a path to the parent directory of the file to be added
+      source: std.Build.LazyPath,
+      // this is the name of the file as it exists as input
+      sub_path: []const u8,
+      // this is the name which will be available when using the resulting Zig module
+      name: []const u8,
+      alignment: ?u29,
+  ) void {
+      //...
+  }
+
+  pub fn addDirectory(
+      embed_file: *EmbedFile,
+      // this is a path to the parent directory of the directory to be added
+      source: std.Build.LazyPath,
+      // this is the name of the directory as it exists as input
+      sub_path: []const u8,
+      // this allows the user to include or exclude files based on their extensions
+      options: std.Build.Step.WriteFile.Directory.Options,
+      // this is the namespace which will be available when using the resulting Zig module
+      name: []const u8,
+      // this alignment, if non-null, will be provided to all resulting `@embedFile` declarations
+      // under this namespace
+      alignment: ?u29,) void {
+      //...
+  }
+
+  /// returns a `LazyPath` to the Zig source file generated from this `EmbedFile`
+  pub fn getSource(embed_file: *EmbedFile) std.Build.LazyPath {
+      // ...
+  }
+
+  /// returns a `Module` containing the Zig source file generated from this `EmbedFile`
+  pub fn createModule(embed_file: *EmbedFile) *std.Build.Module {
+      // ...
+  }
+#+end_src
+
+To see an example of correct usage,
+you can clone this repository and run =zig build test=.
+The resulting Zig file will be placed in =test-output/module.zig= relative to the build prefix.
+(NB: the resulting =module.zig= will not compile,
+since its declarations use paths relative to a folder in the cache.)
