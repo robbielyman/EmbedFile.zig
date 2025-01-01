@@ -115,7 +115,7 @@ fn make(step: *std.Build.Step, prog_node: std.Progress.Node) !void {
     var man = b.graph.cache.obtain();
     defer man.deinit();
 
-    man.hash.add(@as(u32, 0x478502ab));
+    man.hash.add(@as(u32, 0x904702ab));
 
     // embed_file.wf.generated_directory.path.? is an absolute path
     const len = b.cache_root.path.?.len;
@@ -128,15 +128,20 @@ fn make(step: *std.Build.Step, prog_node: std.Progress.Node) !void {
         man.hash.addOptional(decl.alignment);
         man.hash.add(decl.kind);
         switch (decl.kind) {
-            .file => _ = try man.addFile(b.cache_root.join(gpa, &.{ gen_dir_path, decl.name }) catch @panic("OOM"), null),
+            .file => {
+                const idx = try man.addFile(b.cache_root.join(gpa, &.{ gen_dir_path, decl.name }) catch @panic("OOM"), null);
+                man.hash.addBytes(man.files.keys()[idx].contents.?);
+            },
             .directory => {
                 var sub_dir = try dir.openDir(decl.name, .{ .iterate = true });
                 defer sub_dir.close();
 
                 var it = try sub_dir.walk(gpa);
-                while (try it.next()) |entry| {
-                    if (entry.kind == .file) _ = try man.addFile(b.cache_root.join(gpa, &.{ gen_dir_path, decl.name, entry.path }) catch @panic("OOM"), null);
-                }
+                while (try it.next()) |entry|
+                    if (entry.kind == .file) {
+                        const idx = try man.addFile(b.cache_root.join(gpa, &.{ gen_dir_path, decl.name, entry.path }) catch @panic("OOM"), null);
+                        man.hash.addBytes(man.files.keys()[idx].contents.?);
+                    };
             },
         }
     }
