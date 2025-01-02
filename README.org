@@ -38,8 +38,6 @@ This is the public API of an =EmbedFile= Step:
       embed_file: *EmbedFile,
       // this is a path to the parent directory of the file to be added
       source: std.Build.LazyPath,
-      // this is the name of the file as it exists as input
-      sub_path: []const u8,
       // this is the name which will be available when using the resulting Zig module
       name: []const u8,
       alignment: ?u29,
@@ -51,8 +49,6 @@ This is the public API of an =EmbedFile= Step:
       embed_file: *EmbedFile,
       // this is a path to the parent directory of the directory to be added
       source: std.Build.LazyPath,
-      // this is the name of the directory as it exists as input
-      sub_path: []const u8,
       // this allows the user to include or exclude files based on their extensions
       options: std.Build.Step.WriteFile.Directory.Options,
       // this is the namespace which will be available when using the resulting Zig module
@@ -68,14 +64,20 @@ This is the public API of an =EmbedFile= Step:
       // ...
   }
 
-  /// returns a `Module` containing the Zig source file generated from this `EmbedFile`
-  pub fn createModule(embed_file: *EmbedFile) *std.Build.Module {
+  /// adds a named WriteFile step that collects all of this EmbedFile's dependencies to write out
+  pub fn writeSources(embed_file: *EmbedFile, name: []const u8) *std.Build.Step.WriteFile {
       // ...
   }
+
+  /// a `*Module` containing the Zig source file generated from this `EmbedFile`
+  /// add it to your compilation by passing it `addImport`,
+  /// e.g. `exe.root_module.addImport("assets", embed_file.module);`
+  module: *std.Build.Module,
 #+end_src
 
 To see an example of correct usage,
-you can clone this repository and run =zig build test=.
+you can clone this repository and run =zig build test= in the =tests= directory.
 The resulting Zig file will be placed in =test-output/module.zig= relative to the build prefix.
-(NB: the resulting =module.zig= will not compile,
-since its declarations use paths relative to a folder in the cache.)
+(NB: the resulting =module.zig= will not compile without =build.zig= logic,
+since its declarations use module imports that =EmbedFile= constructs itself.
+Of course, you could rewrite or reproduce these imports yourself.)
