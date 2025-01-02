@@ -7,43 +7,112 @@ pub fn main() !void {
 
     const args = std.process.argsAlloc(gpa) catch @panic("OOM");
     defer std.process.argsFree(gpa, args);
-    const input_directory, const alignment = processArgs(args);
+    const options = processArgs(gpa, args) catch @panic("OOM");
+    defer options.deinit(gpa);
 
-    run(gpa, input_directory, alignment) catch |err| {
+    run(gpa, options) catch |err| {
         fatal("error while creating EmbedFile module: {s}", .{@errorName(err)});
     };
 }
 
-fn processArgs(args: []const []const u8) struct { []const u8, ?u29 } {
+const Options = struct {
+    input: []const u8,
+    output: ?[]const u8 = null,
+    alignment: ?u29 = null,
+    include_extensions: ?[]const []const u8 = null,
+    exclude_extensions: []const []const u8 = &.{},
+    rename: ?[]const u8 = null,
+
+    fn deinit(opts: Options, allocator: std.mem.Allocator) void {
+        if (opts.include_extensions) |e| allocator.free(e);
+        allocator.free(opts.exclude_extensions);
+    }
+};
+
+fn processArgs(gpa: std.mem.Allocator, args: []const []const u8) std.mem.Allocator.Error!Options {
     if (args.len < 2) fatalHelp();
     for (args) |arg|
         if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) fatalHelp();
-    if (args.len > 3) fatalHelp();
-    if (args.len == 2) return .{ args[1], null };
-    return .{ args[1], std.fmt.parseInt(u29, args[2], 10) catch fatalHelp() };
+    var idx: usize = 2;
+    var ret: Options = .{
+        .input = args[1],
+    };
+    var maybe_exclude_extensions: ?[]const []const u8 = null;
+
+    while (idx < args.len) : (idx += 1) {
+        const arg = args[idx];
+        alignment: {
+            const alignment = std.fmt.parseUnsigned(u29, arg, 10) catch break :alignment;
+            if (ret.alignment != null) fatalHelp();
+            ret.alignment = alignment;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--output")) {
+            idx += 1;
+            if (idx == args.len or std.mem.startsWith(u8, args[idx], "--")) fatal("error: directory expected after --output\n", .{});
+            if (ret.output != null) fatal("error: duplicate --output argument\n", .{});
+            ret.output = args[idx];
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--exclude")) {
+            idx += 1;
+            if (idx == args.len or std.mem.startsWith(u8, args[idx], "--")) fatal("error: comma-separated list of extensions expected after --exclude\n", .{});
+            if (maybe_exclude_extensions != null) fatal("error: duplicate --exclude argument\n", .{});
+            var list: std.ArrayListUnmanaged([]const u8) = .{};
+            defer list.deinit(gpa);
+            var it = std.mem.tokenizeScalar(u8, args[idx], ',');
+            while (it.next()) |next| try list.append(gpa, next);
+            maybe_exclude_extensions = try list.toOwnedSlice(gpa);
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--include")) {
+            idx += 1;
+            if (idx == args.len or std.mem.startsWith(u8, args[idx], "--")) fatal("error: comma-separated list of extensions expected after --include\n", .{});
+            if (ret.include_extensions != null) fatal("error: duplicate --include argument\n", .{});
+            var list: std.ArrayListUnmanaged([]const u8) = .{};
+            defer list.deinit(gpa);
+            var it = std.mem.tokenizeScalar(u8, args[idx], ',');
+            while (it.next()) |next| try list.append(gpa, next);
+            ret.include_extensions = try list.toOwnedSlice(gpa);
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--rename")) {
+            idx += 1;
+            if (idx == args.len) fatal("name expected after --rename\n", .{});
+            if (ret.rename != null) fatal("error: duplicate --rename argument\n", .{});
+            ret.rename = args[idx];
+            continue;
+        }
+
+        fatal("error: unexpected argument: {s}\n", .{arg});
+    }
+
+    if (maybe_exclude_extensions) |exclude_extensions| ret.exclude_extensions = exclude_extensions;
+
+    return ret;
 }
 
-fn run(gpa: std.mem.Allocator, input_directory: []const u8, alignment: ?u29) !void {
+fn run(gpa: std.mem.Allocator, options: Options) !void {
     errdefer {
         std.debug.dumpStackTrace(@errorReturnTrace().?.*);
     }
-    const status = try std.fs.cwd().statFile(input_directory);
-    var dir, var root: Node = switch (status.kind) {
+    const status = try std.fs.cwd().statFile(options.input);
+    var dir: std.fs.Dir, var root: Node = switch (status.kind) {
         .file => file: {
             const dir = dir: {
-                const sub_path = std.fs.path.dirname(input_directory) orelse break :dir std.fs.cwd();
+                const sub_path = std.fs.path.dirname(options.input) orelse break :dir std.fs.cwd();
                 break :dir try std.fs.cwd().openDir(sub_path, .{});
             };
-            const basename = std.fs.path.basename(input_directory);
+            const basename = std.fs.path.basename(options.input);
             break :file .{ dir, .{ .leaf = .{
-                .name = stripExtension(basename),
+                .name = options.rename orelse stripExtension(basename),
                 .path = basename,
-                .alignment = alignment,
+                .alignment = options.alignment,
             } } };
         },
         .directory => directory: {
-            const basename = std.fs.path.basename(input_directory);
-            var dir = try std.fs.cwd().openDir(input_directory, .{ .iterate = true });
+            if (options.rename != null) fatal("error: --rename is only valid when passed a file", .{});
+            var dir = try std.fs.cwd().openDir(options.input, .{ .iterate = true });
             var root: Node = .{ .node = .{
                 .name = "",
                 .path = "",
@@ -53,17 +122,24 @@ fn run(gpa: std.mem.Allocator, input_directory: []const u8, alignment: ?u29) !vo
             var it = try dir.walk(gpa);
             defer it.deinit();
 
-            while (try it.next()) |entry| {
+            next_entry: while (try it.next()) |entry| {
+                if (entry.kind == .file) {
+                    for (options.exclude_extensions) |ext|
+                        if (std.mem.endsWith(u8, entry.path, ext)) continue :next_entry;
+                    if (options.include_extensions) |extensions| for (extensions) |ext| {
+                        if (std.mem.endsWith(u8, entry.path, ext)) break;
+                    } else continue :next_entry;
+                }
                 const node: Node = switch (entry.kind) {
                     else => continue,
                     .file => .{ .leaf = .{
                         .name = gpa.dupe(u8, stripExtension(entry.basename)) catch @panic("OOM"),
-                        .path = std.fs.path.join(gpa, &.{ basename, entry.path }) catch @panic("OOM"),
-                        .alignment = alignment,
+                        .path = gpa.dupe(u8, entry.path) catch @panic("OOM"),
+                        .alignment = options.alignment,
                     } },
                     .directory => .{ .node = .{
                         .name = gpa.dupe(u8, entry.basename) catch @panic("OOM"),
-                        .path = std.fs.path.join(gpa, &.{ basename, entry.path }) catch @panic("OOM"),
+                        .path = gpa.dupe(u8, entry.path) catch @panic("OOM"),
                         .children = .{},
                     } },
                 };
@@ -99,6 +175,14 @@ fn run(gpa: std.mem.Allocator, input_directory: []const u8, alignment: ?u29) !vo
         },
     }
 
+    var output_dir = if (options.output) |path| try std.fs.cwd().makeOpenPath(path, .{}) else std.fs.cwd();
+    defer if (options.output != null) output_dir.close();
+
+    switch (root) {
+        .leaf => try root.updateAll(gpa, dir, output_dir),
+        .node => |node| for (node.children.items) |child| try child.updateAll(gpa, dir, output_dir),
+    }
+
     try std.io.getStdOut().writeAll(contents.items);
 }
 
@@ -110,6 +194,17 @@ fn stripExtension(basename: []const u8) []const u8 {
 const Node = union(enum) {
     leaf: struct { name: []const u8, path: []const u8, alignment: ?u29 },
     node: struct { name: []const u8, path: []const u8, children: std.ArrayListUnmanaged(Node) },
+
+    fn updateAll(root: Node, gpa: std.mem.Allocator, src_dir: std.fs.Dir, dest_dir: std.fs.Dir) !void {
+        switch (root) {
+            .leaf => |leaf| _ = try src_dir.updateFile(leaf.path, dest_dir, leaf.path, .{}),
+            .node => |node| {
+                var open_dir = try dest_dir.makeOpenPath(node.path, .{});
+                defer open_dir.close();
+                for (node.children.items) |child| try child.updateAll(gpa, src_dir, dest_dir);
+            },
+        }
+    }
 
     pub fn format(node: Node, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
         switch (node) {
@@ -267,10 +362,18 @@ fn fatal(comptime fmt: []const u8, args: anytype) noreturn {
 
 fn fatalHelp() noreturn {
     fatal(
-        \\Usage: embed-file INPUT_PATH [ALIGNMENT]
+        \\Usage: embed-file INPUT_PATH [ALIGNMENT] [options]
         \\
         \\General Options:
-        \\  --help, -h Print usage
+        \\  --help, -h              Print usage
+        \\  --output path           Output matching files to path
+        \\                          (which will be created if it does not exist);
+        \\                          defaults to CWD
+        \\  --include extensions    Comma-separated list of file extension (e.g. ".lua,.txt")
+        \\                          Only matching extensions will be included
+        \\  --exclude extensions    Matching extensions will be excluded
+        \\  --rename name           Only valid when passed a file as INPUT_PATH
+        \\                          The resulting declaration will be named `@"name"`
         \\
         \\
     , .{});

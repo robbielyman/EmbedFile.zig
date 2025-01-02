@@ -50,33 +50,31 @@ fn updateContents(embed_file: *EmbedFile) void {
 
 const Kind = enum { file, directory };
 
-fn addImport(
-    embed_file: *EmbedFile,
-    b: *std.Build,
-    write_file: *std.Build.Step.WriteFile,
-    name: []const u8,
-    kind: Kind,
-    alignment: ?u29,
-) void {
+fn getRun(b: *std.Build) *std.Build.Step.Run {
     const this_dep = b.dependencyFromBuildZig(@This(), .{
         .target = b.graph.host,
         .optimize = .Debug,
     });
     const exe = this_dep.artifact("embed-file");
-    const run = b.addRunArtifact(exe);
-    switch (kind) {
-        .file => run.addFileArg(write_file.getDirectory().path(b, name)),
-        .directory => run.addDirectoryArg(write_file.getDirectory().path(b, name)),
-    }
-    if (alignment) |a| run.addArg(b.fmt("{d}", .{a}));
-    run.step.dependOn(&write_file.step);
+    return b.addRunArtifact(exe);
+}
+
+fn addImport(
+    embed_file: *EmbedFile,
+    run: *std.Build.Step.Run,
+    name: []const u8,
+    kind: Kind,
+) void {
+    const b = run.step.owner;
     const input = run.captureStdOut();
+    run.addArg("--output");
+    const output_dir = run.addOutputDirectoryArg(name);
     const fmt = b.addSystemCommand(&.{ b.graph.zig_exe, "fmt", "--stdin" });
     fmt.setStdIn(.{ .lazy_path = input });
     const output = fmt.captureStdOut();
     const copy_file = b.addWriteFiles();
     const module_file = copy_file.addCopyFile(output, "module.zig");
-    _ = copy_file.addCopyDirectory(write_file.getDirectory(), "", .{});
+    _ = copy_file.addCopyDirectory(output_dir, "", .{});
     for (embed_file.named_wfs.items) |wf| {
         _ = wf.addCopyDirectory(copy_file.getDirectory(), name, .{});
     }
@@ -101,7 +99,10 @@ fn addImport(
 pub fn add(embed_file: *EmbedFile, name: []const u8, bytes: []const u8, alignment: ?u29) void {
     const b = embed_file.module.owner;
     const write_file = b.addWriteFile(name, bytes);
-    embed_file.addImport(b, write_file, name, .file, alignment);
+    const run = getRun(b);
+    run.addFileArg(write_file.files.items[0].getPath());
+    if (alignment) |a| run.addArg(b.fmt("{d}", .{a}));
+    embed_file.addImport(run, name, .file);
 }
 
 /// name is the eventual declaration name to be used,
@@ -113,9 +114,12 @@ pub fn addFile(
     alignment: ?u29,
 ) void {
     const b = embed_file.module.owner;
-    const write_file = b.addWriteFiles();
-    _ = write_file.addCopyFile(source, name);
-    embed_file.addImport(b, write_file, name, .file, alignment);
+    const run = getRun(b);
+    run.addFileArg(source);
+    if (alignment) |a| run.addArg(b.fmt("{d}", .{a}));
+    run.addArg("--rename");
+    run.addArg(name);
+    embed_file.addImport(run, name, .file);
 }
 
 /// name is the eventual declaration name to be used as a namespace,
@@ -132,9 +136,18 @@ pub fn addDirectory(
     alignment: ?u29,
 ) void {
     const b = embed_file.module.owner;
-    const write_file = b.addWriteFiles();
-    _ = write_file.addCopyDirectory(source, name, options);
-    embed_file.addImport(b, write_file, name, .directory, alignment);
+    const run = getRun(b);
+    run.addDirectoryArg(source);
+    if (alignment) |a| run.addArg(b.fmt("{d}", .{a}));
+    if (options.exclude_extensions.len > 0) {
+        const arg = std.mem.join(b.allocator, ",", options.exclude_extensions) catch @panic("OOM");
+        run.addArgs(&.{ "--exclude", arg });
+    }
+    if (options.include_extensions) |include| {
+        const arg = std.mem.join(b.allocator, ",", include) catch @panic("OOM");
+        run.addArgs(&.{ "--include", arg });
+    }
+    embed_file.addImport(run, name, .directory);
 }
 
 /// returns a `LazyPath` representing the Zig source file generated from this `EmbedFile`
