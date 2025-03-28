@@ -1,5 +1,6 @@
 .{
-    .name = "embed-file",
+    .name = .embed_file,
+    .fingerprint = 0xb6d5f96f25c079c4, // changing this has security and trust implications
     .version = "1.0.0",
     .paths = .{ "build.zig.zon", "build.zig", "LICENSE", "README.org", "src/main.zig", "tests" },
     .dependencies = .{},
